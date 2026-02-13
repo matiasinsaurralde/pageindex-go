@@ -787,16 +787,52 @@ func removeNodeText(nodes []*model.Node) {
 
 func addNodeSummaries(ctx context.Context, client *llm.Client, structure []*model.Node, modelName string) error {
 	nodes := tree.Flatten(structure)
-	for _, n := range nodes {
-		if strings.TrimSpace(n.Text) == "" {
+	const maxConcurrentSummaries = 6
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrentSummaries)
+	var firstErr error
+	var errMu sync.Mutex
+
+	for _, node := range nodes {
+		if strings.TrimSpace(node.Text) == "" {
 			continue
 		}
-		prompt := fmt.Sprintf("You are given a part of a document. Generate a concise description of the main points.\n\nPartial Document Text:\n%s\n\nDirectly return the description only.", n.Text)
-		summary, err := client.Chat(ctx, modelName, prompt, nil)
-		if err != nil {
-			return err
+
+		errMu.Lock()
+		hasErr := firstErr != nil
+		errMu.Unlock()
+		if hasErr {
+			break
 		}
-		n.Summary = strings.TrimSpace(summary)
+
+		wg.Add(1)
+		go func(n *model.Node) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if ctx.Err() != nil {
+				return
+			}
+
+			prompt := fmt.Sprintf("You are given a part of a document. Generate a concise description of the main points.\n\nPartial Document Text:\n%s\n\nDirectly return the description only.", n.Text)
+			summary, err := client.Chat(ctx, modelName, prompt, nil)
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				return
+			}
+			n.Summary = strings.TrimSpace(summary)
+		}(node)
+	}
+
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
 	}
 	return nil
 }
