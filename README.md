@@ -10,10 +10,6 @@ Go rewrite of PageIndex for generating a hierarchical, reasoning-friendly tree i
 > - Upstream project: `VectifyAI/PageIndex`
 > - Upstream license: **MIT License**
 > - This repository keeps its own `LICENSE` and includes upstream/third-party notices in `THIRD_PARTY_LICENSES.md`
->
-> See:
-> - `LICENSE`
-> - `THIRD_PARTY_LICENSES.md`
 
 ## What this project does
 
