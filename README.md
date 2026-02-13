@@ -1,5 +1,8 @@
 # pageindex-go
 
+[![build](https://img.shields.io/github/actions/workflow/status/matiasinsaurralde/pageindex-go/ci.yml?branch=main&label=build)](https://github.com/matiasinsaurralde/pageindex-go/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/github/actions/workflow/status/matiasinsaurralde/pageindex-go/ci.yml?branch=main&label=tests)](https://github.com/matiasinsaurralde/pageindex-go/actions/workflows/ci.yml)
+
 Go rewrite of PageIndex for generating a hierarchical, reasoning-friendly tree index from PDF documents.
 
 > [!IMPORTANT]
