@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -63,7 +64,6 @@ func runFromPages(ctx context.Context, filename string, pages []model.Page, opt 
 			Title: "Document",
 		}}
 	}
-	structure = wrapWithDocumentRootIfNeeded(structure, pages)
 	structure = normalizeToSingleRootIfNeeded(structure, pages)
 	sortNodesByIndex(structure)
 
@@ -107,53 +107,8 @@ func processNoTOC(ctx context.Context, client *llm.Client, pages []model.Page, o
 	if len(chunks) == 0 {
 		return nil, fmt.Errorf("no chunks generated")
 	}
-
-	tocAttempts := opt.TOCAttempts
-	if tocAttempts <= 1 {
-		return processNoTOCAttempt(ctx, client, pages, chunks, opt, startIndex)
-	}
-
-	type tocAttemptResult struct {
-		items []model.TOCItem
-		err   error
-	}
-
-	results := make([]tocAttemptResult, tocAttempts)
-	var wg sync.WaitGroup
-	for i := 0; i < tocAttempts; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			items, err := processNoTOCAttempt(ctx, client, pages, chunks, opt, startIndex)
-			results[idx] = tocAttemptResult{items: items, err: err}
-		}(i)
-	}
-	wg.Wait()
-
-	var best []model.TOCItem
-	bestUnique, bestCount := -1, -1
-	var firstErr error
-	for _, r := range results {
-		if r.err != nil {
-			if firstErr == nil {
-				firstErr = r.err
-			}
-			continue
-		}
-		unique, count := tocQuality(r.items)
-		if unique > bestUnique || (unique == bestUnique && count > bestCount) {
-			best = r.items
-			bestUnique = unique
-			bestCount = count
-		}
-	}
-	if len(best) == 0 {
-		if firstErr != nil {
-			return nil, firstErr
-		}
-		return nil, fmt.Errorf("empty toc generated")
-	}
-	return best, nil
+	// Match Python implementation behavior: single pass per run.
+	return processNoTOCAttempt(ctx, client, pages, chunks, opt, startIndex)
 }
 
 func processNoTOCAttempt(ctx context.Context, client *llm.Client, pages []model.Page, chunks []string, opt config.Options, startIndex int) ([]model.TOCItem, error) {
@@ -267,10 +222,8 @@ func buildTaggedChunks(pages []model.Page, modelName string, maxTokens int, star
 		pageNo := i + startIndex
 		tagged := fmt.Sprintf("<physical_index_%d>\n%s\n<physical_index_%d>\n\n", pageNo, p.Text, pageNo)
 		parts = append(parts, tagged)
-		t := p.TokenCount
-		if t == 0 {
-			t = tokens.Count(modelName, tagged)
-		}
+		// Match Python behavior: count tokens on tagged page text.
+		t := tokens.Count(modelName, tagged)
 		lengths = append(lengths, t)
 		total += t
 	}
@@ -278,34 +231,41 @@ func buildTaggedChunks(pages []model.Page, modelName string, maxTokens int, star
 		return []string{strings.Join(parts, "")}
 	}
 
-	var chunks []string
-	var current []string
+	// Match Python page_list_to_group_text behavior:
+	// split around average_tokens_per_part with 1-page overlap.
+	expectedParts := int(math.Ceil(float64(total) / float64(maxTokens)))
+	avgTokensPerPart := int(math.Ceil((float64(total)/float64(expectedParts) + float64(maxTokens)) / 2))
+	overlapPages := 1
+
+	chunks := make([]string, 0, expectedParts)
+	currentStart := 0
 	currentTokens := 0
-	for i := range parts {
-		if currentTokens+lengths[i] > maxTokens && len(current) > 0 {
-			chunks = append(chunks, strings.Join(current, ""))
-			current = current[:0]
+	for i := 0; i < len(parts); i++ {
+		if currentTokens+lengths[i] > avgTokensPerPart && i > currentStart {
+			chunks = append(chunks, strings.Join(parts[currentStart:i], ""))
+			nextStart := i - overlapPages
+			if nextStart < 0 {
+				nextStart = 0
+			}
+			currentStart = nextStart
 			currentTokens = 0
+			for j := currentStart; j < i; j++ {
+				currentTokens += lengths[j]
+			}
 		}
-		current = append(current, parts[i])
 		currentTokens += lengths[i]
 	}
-	if len(current) > 0 {
-		chunks = append(chunks, strings.Join(current, ""))
+	if currentStart < len(parts) {
+		chunks = append(chunks, strings.Join(parts[currentStart:], ""))
 	}
 	return chunks
 }
 
 func normalizeTOCItems(items []model.TOCItem, pageCount int, startIndex int) []model.TOCItem {
 	out := make([]model.TOCItem, 0, len(items))
-	nextStructure := 1
 	for i := range items {
 		item := items[i]
 		item.Structure = strings.TrimSpace(item.Structure)
-		if item.Structure == "" {
-			item.Structure = strconv.Itoa(nextStructure)
-			nextStructure++
-		}
 		item.Title = strings.TrimSpace(item.Title)
 		if item.Title == "" {
 			continue
@@ -323,27 +283,7 @@ func normalizeTOCItems(items []model.TOCItem, pageCount int, startIndex int) []m
 		}
 		out = append(out, item)
 	}
-
-	seen := make(map[string]bool, len(out))
-	dedup := make([]model.TOCItem, 0, len(out))
-	for _, item := range out {
-		key := fmt.Sprintf("%s|%s|%d", item.Structure, item.Title, *item.PhysicalIndex)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		dedup = append(dedup, item)
-	}
-
-	sort.SliceStable(dedup, func(i, j int) bool {
-		pi := *dedup[i].PhysicalIndex
-		pj := *dedup[j].PhysicalIndex
-		if pi != pj {
-			return pi < pj
-		}
-		return compareStructureOrder(dedup[i].Structure, dedup[j].Structure) < 0
-	})
-	return dedup
+	return out
 }
 
 func parseTOCItems(raw string) ([]model.TOCItem, error) {
@@ -494,8 +434,10 @@ func normalizeToSingleRootIfNeeded(roots []*model.Node, pages []model.Page) []*m
 	}
 	primary := roots[0]
 	primary.Nodes = append(primary.Nodes, roots[1:]...)
-	if title := inferDocumentTitle(pages[0].Text); title != "" {
+	if strings.TrimSpace(primary.Title) == "" {
+		if title := inferDocumentTitle(pages[0].Text); title != "" {
 		primary.Title = title
+		}
 	}
 	if primary.StartIndex == nil || *primary.StartIndex != 1 {
 		start := 1
@@ -596,19 +538,25 @@ func parseStructurePath(s string) []int {
 
 func inferDocumentTitle(text string) string {
 	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+	collected := make([]string, 0, 3)
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		if len(line) > 8 {
-			if len(line) > 140 {
-				return strings.TrimSpace(line[:140])
-			}
-			return line
+		collected = append(collected, line)
+		if len(collected) >= 3 {
+			break
 		}
 	}
-	return ""
+	if len(collected) == 0 {
+		return ""
+	}
+	title := strings.TrimSpace(strings.Join(collected, " "))
+	if len(title) > 160 {
+		return strings.TrimSpace(title[:160])
+	}
+	return title
 }
 
 func parentStructure(s string) string {
@@ -618,6 +566,8 @@ func parentStructure(s string) string {
 	}
 	return strings.Join(parts[:len(parts)-1], ".")
 }
+
+
 
 func verifyTOC(ctx context.Context, client *llm.Client, pages []model.Page, items []model.TOCItem, modelName string, startIndex int) (float64, []int) {
 	if len(items) == 0 {
