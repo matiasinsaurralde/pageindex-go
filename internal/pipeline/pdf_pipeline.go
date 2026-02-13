@@ -106,6 +106,56 @@ func processNoTOC(ctx context.Context, client *llm.Client, pages []model.Page, o
 		return nil, fmt.Errorf("no chunks generated")
 	}
 
+	tocAttempts := opt.TOCAttempts
+	if tocAttempts <= 1 {
+		return processNoTOCAttempt(ctx, client, pages, chunks, opt, startIndex)
+	}
+
+	type tocAttemptResult struct {
+		items []model.TOCItem
+		err   error
+	}
+
+	results := make([]tocAttemptResult, tocAttempts)
+	var wg sync.WaitGroup
+	for i := 0; i < tocAttempts; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			items, err := processNoTOCAttempt(ctx, client, pages, chunks, opt, startIndex)
+			results[idx] = tocAttemptResult{items: items, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	var best []model.TOCItem
+	bestUnique, bestCount := -1, -1
+	var firstErr error
+	for _, r := range results {
+		if r.err != nil {
+			if firstErr == nil {
+				firstErr = r.err
+			}
+			continue
+		}
+		unique, count := tocQuality(r.items)
+		if unique > bestUnique || (unique == bestUnique && count > bestCount) {
+			best = r.items
+			bestUnique = unique
+			bestCount = count
+		}
+	}
+	if len(best) == 0 {
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, fmt.Errorf("empty toc generated")
+	}
+	return best, nil
+}
+
+func processNoTOCAttempt(ctx context.Context, client *llm.Client, pages []model.Page, chunks []string, opt config.Options, startIndex int) ([]model.TOCItem, error) {
+
 	initialPrompt := `
 You are an expert in extracting hierarchical tree structure, your task is to generate the tree structure of the document.
 
@@ -191,6 +241,17 @@ Return ONLY the additional JSON list:
 	addAppearStart(ctx, client, pages, toc, opt.Model, startIndex)
 
 	return normalizeTOCItems(toc, len(pages), startIndex), nil
+}
+
+func tocQuality(items []model.TOCItem) (int, int) {
+	seen := make(map[int]struct{}, len(items))
+	for _, item := range items {
+		if item.PhysicalIndex == nil {
+			continue
+		}
+		seen[*item.PhysicalIndex] = struct{}{}
+	}
+	return len(seen), len(items)
 }
 
 func buildTaggedChunks(pages []model.Page, modelName string, maxTokens int, startIndex int) []string {

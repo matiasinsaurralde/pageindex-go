@@ -11,6 +11,7 @@ import (
 type Options struct {
 	Model               string `yaml:"model" json:"model"`
 	TOCCheckPageNum     int    `yaml:"toc_check_page_num" json:"toc_check_page_num"`
+	TOCAttempts         int    `yaml:"toc_attempts" json:"toc_attempts"`
 	MaxPageNumEachNode  int    `yaml:"max_page_num_each_node" json:"max_page_num_each_node"`
 	MaxTokenNumEachNode int    `yaml:"max_token_num_each_node" json:"max_token_num_each_node"`
 	IfAddNodeID         string `yaml:"if_add_node_id" json:"if_add_node_id"`
@@ -23,6 +24,7 @@ func DefaultOptions() Options {
 	return Options{
 		Model:               "gpt-4o-2024-11-20",
 		TOCCheckPageNum:     20,
+		TOCAttempts:         2,
 		MaxPageNumEachNode:  10,
 		MaxTokenNumEachNode: 20000,
 		IfAddNodeID:         "yes",
@@ -52,6 +54,9 @@ func Load(path string) (Options, error) {
 func (o *Options) Normalize() {
 	if o.Model == "" {
 		o.Model = "gpt-4o-2024-11-20"
+	}
+	if o.TOCAttempts < 1 {
+		o.TOCAttempts = 1
 	}
 	o.IfAddNodeID = normalizeYesNo(o.IfAddNodeID, "yes")
 	o.IfAddNodeSummary = normalizeYesNo(o.IfAddNodeSummary, "yes")
