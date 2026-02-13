@@ -8,8 +8,8 @@ import (
 
 	pdf "github.com/ledongthuc/pdf"
 
-	"github.com/VectifyAI/PageIndex/internal/model"
-	"github.com/VectifyAI/PageIndex/internal/tokens"
+	"github.com/matiasinsaurralde/go-pageindex/internal/model"
+	"github.com/matiasinsaurralde/go-pageindex/internal/tokens"
 )
 
 func ExtractPagesWithTokensFromBytes(data []byte, modelName string) ([]model.Page, error) {

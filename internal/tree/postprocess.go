@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/VectifyAI/PageIndex/internal/model"
+	"github.com/matiasinsaurralde/go-pageindex/internal/model"
 )
 
 func BuildTree(items []model.TOCItem, totalPages int) []*model.Node {

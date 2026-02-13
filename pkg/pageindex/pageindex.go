@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/VectifyAI/PageIndex/internal/config"
-	"github.com/VectifyAI/PageIndex/internal/model"
-	"github.com/VectifyAI/PageIndex/internal/pipeline"
+	"github.com/matiasinsaurralde/go-pageindex/internal/config"
+	"github.com/matiasinsaurralde/go-pageindex/internal/model"
+	"github.com/matiasinsaurralde/go-pageindex/internal/pipeline"
 )
 
 type Options = config.Options

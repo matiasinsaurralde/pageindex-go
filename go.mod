@@ -1,4 +1,4 @@
-module github.com/VectifyAI/PageIndex
+module github.com/matiasinsaurralde/go-pageindex
 
 go 1.24.1
 

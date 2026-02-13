@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VectifyAI/PageIndex/pkg/pageindex"
+	"github.com/matiasinsaurralde/go-pageindex/pkg/pageindex"
 )
 
 func main() {

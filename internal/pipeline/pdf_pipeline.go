@@ -12,13 +12,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/VectifyAI/PageIndex/internal/config"
-	"github.com/VectifyAI/PageIndex/internal/llm"
-	"github.com/VectifyAI/PageIndex/internal/model"
-	"github.com/VectifyAI/PageIndex/internal/pdf"
-	"github.com/VectifyAI/PageIndex/internal/tokens"
-	"github.com/VectifyAI/PageIndex/internal/tree"
-	"github.com/VectifyAI/PageIndex/internal/util"
+	"github.com/matiasinsaurralde/go-pageindex/internal/config"
+	"github.com/matiasinsaurralde/go-pageindex/internal/llm"
+	"github.com/matiasinsaurralde/go-pageindex/internal/model"
+	"github.com/matiasinsaurralde/go-pageindex/internal/pdf"
+	"github.com/matiasinsaurralde/go-pageindex/internal/tokens"
+	"github.com/matiasinsaurralde/go-pageindex/internal/tree"
+	"github.com/matiasinsaurralde/go-pageindex/internal/util"
 )
 
 var physicalIndexRE = regexp.MustCompile(`<?physical_index_(\d+)>?`)
@@ -64,6 +64,8 @@ func runFromPages(ctx context.Context, filename string, pages []model.Page, opt 
 		}}
 	}
 	structure = wrapWithDocumentRootIfNeeded(structure, pages)
+	structure = normalizeToSingleRootIfNeeded(structure, pages)
+	sortNodesByIndex(structure)
 
 	_ = processLargeNodesRecursively(ctx, client, structure, pages, opt, 0)
 
@@ -334,7 +336,12 @@ func normalizeTOCItems(items []model.TOCItem, pageCount int, startIndex int) []m
 	}
 
 	sort.SliceStable(dedup, func(i, j int) bool {
-		return *dedup[i].PhysicalIndex < *dedup[j].PhysicalIndex
+		pi := *dedup[i].PhysicalIndex
+		pj := *dedup[j].PhysicalIndex
+		if pi != pj {
+			return pi < pj
+		}
+		return compareStructureOrder(dedup[i].Structure, dedup[j].Structure) < 0
 	})
 	return dedup
 }
@@ -419,11 +426,7 @@ func buildTreeWithBoundaries(items []model.TOCItem, totalPages int) []*model.Nod
 		end := totalPages
 		if i+1 < len(clean) {
 			next := *clean[i+1].PhysicalIndex
-			if strings.EqualFold(clean[i+1].AppearStart, "yes") && (next-start) > 1 {
-				end = next - 1
-			} else {
-				end = next
-			}
+			end = next
 		}
 		if end < start {
 			end = start
@@ -479,6 +482,112 @@ func wrapWithDocumentRootIfNeeded(roots []*model.Node, pages []model.Page) []*mo
 		Nodes:      roots,
 	}
 	return []*model.Node{root}
+}
+
+func normalizeToSingleRootIfNeeded(roots []*model.Node, pages []model.Page) []*model.Node {
+	if len(roots) <= 1 {
+		return roots
+	}
+	primary := roots[0]
+	primary.Nodes = append(primary.Nodes, roots[1:]...)
+	if title := inferDocumentTitle(pages[0].Text); title != "" {
+		primary.Title = title
+	}
+	if primary.StartIndex == nil || *primary.StartIndex != 1 {
+		start := 1
+		primary.StartIndex = &start
+	}
+	if len(primary.Nodes) > 0 && primary.Nodes[0].StartIndex != nil {
+		end := *primary.Nodes[0].StartIndex
+		primary.EndIndex = &end
+	}
+	return []*model.Node{primary}
+}
+
+func sortNodesByIndex(nodes []*model.Node) {
+	sort.SliceStable(nodes, func(i, j int) bool {
+		return compareNodeOrder(nodes[i], nodes[j]) < 0
+	})
+	for _, n := range nodes {
+		if len(n.Nodes) > 0 {
+			sortNodesByIndex(n.Nodes)
+		}
+	}
+}
+
+func compareNodeOrder(a, b *model.Node) int {
+	ai := 0
+	bi := 0
+	if a.StartIndex != nil {
+		ai = *a.StartIndex
+	}
+	if b.StartIndex != nil {
+		bi = *b.StartIndex
+	}
+	if ai != bi {
+		if ai < bi {
+			return -1
+		}
+		return 1
+	}
+	if a.Title < b.Title {
+		return -1
+	}
+	if a.Title > b.Title {
+		return 1
+	}
+	return 0
+}
+
+func compareStructureOrder(a, b string) int {
+	as := parseStructurePath(a)
+	bs := parseStructurePath(b)
+	minLen := len(as)
+	if len(bs) < minLen {
+		minLen = len(bs)
+	}
+	for i := 0; i < minLen; i++ {
+		if as[i] != bs[i] {
+			if as[i] < bs[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	if len(as) < len(bs) {
+		return -1
+	}
+	if len(as) > len(bs) {
+		return 1
+	}
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
+}
+
+func parseStructurePath(s string) []int {
+	parts := strings.Split(strings.TrimSpace(s), ".")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			// Keep deterministic fallback ordering for non-numeric paths.
+			return []int{1 << 30}
+		}
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return []int{1 << 30}
+	}
+	return out
 }
 
 func inferDocumentTitle(text string) string {
