@@ -426,7 +426,11 @@ func buildTreeWithBoundaries(items []model.TOCItem, totalPages int) []*model.Nod
 		end := totalPages
 		if i+1 < len(clean) {
 			next := *clean[i+1].PhysicalIndex
-			end = next
+			if strings.EqualFold(clean[i+1].AppearStart, "yes") && (next-start) > 1 {
+				end = next - 1
+			} else {
+				end = next
+			}
 		}
 		if end < start {
 			end = start
@@ -848,7 +852,7 @@ func processLargeNodesRecursively(ctx context.Context, client *llm.Client, nodes
 		for i := start - 1; i < end; i++ {
 			tokenNum += pages[i].TokenCount
 		}
-		pageSpan := end - start + 1
+		pageSpan := end - start
 		if pageSpan > opt.MaxPageNumEachNode && tokenNum >= opt.MaxTokenNumEachNode {
 			subPages := pages[start-1 : end]
 			subItems, err := processNoTOC(ctx, client, subPages, opt, start)

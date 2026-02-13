@@ -55,8 +55,17 @@ func (o *Options) Normalize() {
 	if o.Model == "" {
 		o.Model = "gpt-4o-2024-11-20"
 	}
+	if o.TOCCheckPageNum <= 0 {
+		o.TOCCheckPageNum = 20
+	}
 	if o.TOCAttempts < 1 {
 		o.TOCAttempts = 1
+	}
+	if o.MaxPageNumEachNode <= 0 {
+		o.MaxPageNumEachNode = 10
+	}
+	if o.MaxTokenNumEachNode <= 0 {
+		o.MaxTokenNumEachNode = 20000
 	}
 	o.IfAddNodeID = normalizeYesNo(o.IfAddNodeID, "yes")
 	o.IfAddNodeSummary = normalizeYesNo(o.IfAddNodeSummary, "yes")
