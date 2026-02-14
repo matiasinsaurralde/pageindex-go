@@ -100,9 +100,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.HandleFunc("POST /v1/search", s.search)
 	mux.HandleFunc("POST /v1/ask", s.ask)
 
+	allowedOrigins := parseAllowedOrigins(os.Getenv("DOCSEARCH_CORS_ALLOWED_ORIGINS"))
+	if len(allowedOrigins) == 0 {
+		allowedOrigins = []string{"http://localhost:5173"}
+	}
+	handler := s.withCORS(mux, allowedOrigins)
+
 	s.httpServer = &http.Server{
 		Addr:    s.listenAddr,
-		Handler: s.withLogging(mux),
+		Handler: s.withLogging(handler),
 	}
 	log.Printf("document-search server listening on %s", s.listenAddr)
 	errCh := make(chan error, 1)
@@ -183,6 +189,43 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 	})
 }
 
+func parseAllowedOrigins(raw string) []string {
+	parts := strings.Split(raw, ",")
+	origins := make([]string, 0, len(parts))
+	for _, p := range parts {
+		value := strings.TrimSpace(p)
+		if value == "" {
+			continue
+		}
+		origins = append(origins, value)
+	}
+	return origins
+}
+
+func (s *Server) withCORS(next http.Handler, allowedOrigins []string) http.Handler {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		allowed[origin] = struct{}{}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" {
+			if _, ok := allowed[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				w.Header().Set("Access-Control-Max-Age", "600")
+			}
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -199,25 +242,21 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 	if os.Getenv("OPENAI_API_KEY") == "" {
-		api.WriteError(w, http.StatusServiceUnavailable, "", "not_ready", "missing OPENAI_API_KEY", nil)
+		api.WriteError(w, http.StatusServiceUnavailable, "not_ready", "missing OPENAI_API_KEY", nil)
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
-	reqID := api.RequestID(r, "")
-	filename, pdf, opts, bodyReqID, err := ingest.ParseRequest(r)
-	if bodyReqID != "" {
-		reqID = bodyReqID
-	}
+	filename, pdf, opts, err := ingest.ParseRequest(r)
 	if err != nil {
 		var ce *api.ClientErr
 		if errors.As(err, &ce) {
-			api.WriteError(w, ce.Status, reqID, ce.Code, ce.Message, ce.Details)
+			api.WriteError(w, ce.Status, ce.Code, ce.Message, ce.Details)
 			return
 		}
-		api.WriteError(w, http.StatusBadRequest, reqID, "invalid_request", err.Error(), nil)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
 		return
 	}
 
@@ -228,20 +267,20 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	result, err := pageindex.PageIndexPDFBytes(r.Context(), filename, pdf, merged)
 	if err != nil {
-		api.WriteError(w, http.StatusBadGateway, reqID, "ingest_failed", err.Error(), nil)
+		api.WriteError(w, http.StatusBadGateway, "ingest_failed", err.Error(), nil)
 		return
 	}
 
 	docID := ingest.NewDocID()
 	chunks := ingest.ExtractChunks(docID, result.DocName, result.Structure)
 	if len(chunks) == 0 {
-		api.WriteError(w, http.StatusUnprocessableEntity, reqID, "ingest_failed", "no searchable chunks extracted from document", nil)
+		api.WriteError(w, http.StatusUnprocessableEntity, "ingest_failed", "no searchable chunks extracted from document", nil)
 		return
 	}
 
 	chromemDocs := ingest.ToChromemDocs(chunks)
 	if err := s.collection.AddDocuments(r.Context(), chromemDocs, max(1, runtime.NumCPU()/2)); err != nil {
-		api.WriteError(w, http.StatusBadGateway, reqID, "vector_index_error", err.Error(), nil)
+		api.WriteError(w, http.StatusBadGateway, "vector_index_error", err.Error(), nil)
 		return
 	}
 
@@ -258,7 +297,6 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	s.catalog.Put(record)
 
 	api.WriteJSON(w, http.StatusCreated, api.IngestResponse{
-		RequestID:        reqID,
 		DocID:            docID,
 		DocName:          result.DocName,
 		ChunksIndexed:    len(chunks),
@@ -271,35 +309,32 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteDocument(w http.ResponseWriter, r *http.Request) {
 	docID := strings.TrimSpace(r.PathValue("doc_id"))
-	reqID := api.RequestID(r, "")
 	if docID == "" {
-		api.WriteError(w, http.StatusBadRequest, reqID, "invalid_request", "doc_id is required", nil)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "doc_id is required", nil)
 		return
 	}
 
 	if err := s.collection.Delete(r.Context(), map[string]string{"doc_id": docID}, nil); err != nil {
-		api.WriteError(w, http.StatusBadGateway, reqID, "vector_index_error", err.Error(), nil)
+		api.WriteError(w, http.StatusBadGateway, "vector_index_error", err.Error(), nil)
 		return
 	}
 
 	existed := s.catalog.Delete(docID)
 	api.WriteJSON(w, http.StatusOK, api.DeleteResponse{
-		RequestID: reqID,
-		DocID:     docID,
-		Deleted:   existed,
+		DocID:   docID,
+		Deleted: existed,
 	})
 }
 
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	var req api.SearchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "", "invalid_request", "invalid JSON: "+err.Error(), nil)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error(), nil)
 		return
 	}
-	reqID := api.RequestID(r, req.RequestID)
 	req.Query = strings.TrimSpace(req.Query)
 	if req.Query == "" {
-		api.WriteError(w, http.StatusBadRequest, reqID, "invalid_request", "query is required", nil)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "query is required", nil)
 		return
 	}
 
@@ -311,27 +346,25 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		api.PositiveOrDefault(req.MaxChunksPerDoc, 4),
 	)
 	if err != nil {
-		api.WriteError(w, http.StatusBadGateway, reqID, "search_failed", err.Error(), nil)
+		api.WriteError(w, http.StatusBadGateway, "search_failed", err.Error(), nil)
 		return
 	}
 
 	api.WriteJSON(w, http.StatusOK, api.SearchResponse{
-		RequestID: reqID,
-		Query:     req.Query,
-		Results:   results,
+		Query:   req.Query,
+		Results: results,
 	})
 }
 
 func (s *Server) ask(w http.ResponseWriter, r *http.Request) {
 	var req api.AskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "", "invalid_request", "invalid JSON: "+err.Error(), nil)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error(), nil)
 		return
 	}
-	reqID := api.RequestID(r, req.RequestID)
 	req.Question = strings.TrimSpace(req.Question)
 	if req.Question == "" {
-		api.WriteError(w, http.StatusBadRequest, reqID, "invalid_request", "question is required", nil)
+		api.WriteError(w, http.StatusBadRequest, "invalid_request", "question is required", nil)
 		return
 	}
 
@@ -342,14 +375,14 @@ func (s *Server) ask(w http.ResponseWriter, r *http.Request) {
 	startSearch := time.Now()
 	rankedDocs, err := s.searcher.Query(r.Context(), req.Question, topKChunks, topNDocs, maxContextChunks)
 	if err != nil {
-		api.WriteError(w, http.StatusBadGateway, reqID, "search_failed", err.Error(), nil)
+		api.WriteError(w, http.StatusBadGateway, "search_failed", err.Error(), nil)
 		return
 	}
 	searchElapsed := time.Since(startSearch).Milliseconds()
 
 	contextChunks := rag.FlattenContextChunks(rankedDocs, maxContextChunks)
 	if len(contextChunks) == 0 {
-		api.WriteError(w, http.StatusUnprocessableEntity, reqID, "insufficient_context", "no context chunks found for question", nil)
+		api.WriteError(w, http.StatusUnprocessableEntity, "insufficient_context", "no context chunks found for question", nil)
 		return
 	}
 
@@ -366,7 +399,7 @@ func (s *Server) ask(w http.ResponseWriter, r *http.Request) {
 	startLLM := time.Now()
 	answer, finishReason, err := s.chatWithSystem(r.Context(), modelName, temp, prompt)
 	if err != nil {
-		api.WriteError(w, http.StatusBadGateway, reqID, "llm_error", err.Error(), nil)
+		api.WriteError(w, http.StatusBadGateway, "llm_error", err.Error(), nil)
 		return
 	}
 	llmElapsed := time.Since(startLLM).Milliseconds()
@@ -385,14 +418,34 @@ func (s *Server) ask(w http.ResponseWriter, r *http.Request) {
 			ChunkID: ch.ChunkID,
 		})
 	}
+	chunkScoreByID := make(map[string]float64, len(contextChunks))
+	for _, doc := range rankedDocs {
+		for _, ch := range doc.Chunks {
+			if _, ok := chunkScoreByID[ch.ChunkID]; ok {
+				continue
+			}
+			chunkScoreByID[ch.ChunkID] = ch.ChunkScore
+		}
+	}
+	rawContext := make([]api.ChunkMatchPayload, 0, len(contextChunks))
+	for _, ch := range contextChunks {
+		rawContext = append(rawContext, api.ChunkMatchPayload{
+			DocID:      ch.DocID,
+			DocName:    ch.DocName,
+			ChunkID:    ch.ChunkID,
+			NodeID:     ch.NodeID,
+			ChunkScore: chunkScoreByID[ch.ChunkID],
+			Text:       ch.Text,
+		})
+	}
 
 	api.WriteJSON(w, http.StatusOK, api.AskResponse{
-		RequestID:  reqID,
 		Question:   req.Question,
 		Answer:     strings.TrimSpace(answer),
 		Citations:  citations,
 		Search:     api.AskSearchPayload{TopDocIDs: topDocIDs},
 		FinishMode: finishReason,
+		RawContext: rawContext,
 		TimingsMS: map[string]int64{
 			"search": searchElapsed,
 			"llm":    llmElapsed,

@@ -40,6 +40,8 @@ func (s *Service) Query(ctx context.Context, query string, topKChunks, topNDocs,
 		}
 		docNames[docID] = h.Metadata["doc_name"]
 		grouped[docID] = append(grouped[docID], api.ChunkMatchPayload{
+			DocID:      docID,
+			DocName:    h.Metadata["doc_name"],
 			ChunkID:    h.ID,
 			NodeID:     h.Metadata["node_id"],
 			ChunkScore: float64(h.Similarity),
