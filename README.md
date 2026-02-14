@@ -60,6 +60,50 @@ Optional flags:
 - `--config` path to YAML config (optional; omit to use built-in defaults)
 - `--output` output JSON path (prints to stdout if omitted)
 
+## HTTP API
+
+Run the server (requires `OPENAI_API_KEY` in env or `.env`):
+
+```bash
+go run ./cmd/pageindex --serve --listen ":8080"
+```
+
+Optional server flags: `--config`, `--max-upload-mb 50`, `--request-timeout 30m`, `--max-concurrency 2`, `--log-json`.
+
+**Endpoints**
+
+- `GET /v1/healthz` — liveness
+- `GET /v1/readyz` — readiness (config and API key)
+- `POST /v1/structure` — get document structure for one PDF (sync)
+
+**Examples (curl)**
+
+Multipart (recommended):
+
+```bash
+curl -X POST "http://localhost:8080/v1/structure" \
+  -F "file=@./document.pdf" \
+  -F 'options={"model":"gpt-4o-2024-11-20","if_add_node_text":"no"}'
+```
+
+JSON (base64-encoded PDF):
+
+```bash
+# Replace <base64> with: base64 -i document.pdf | tr -d '\n'
+curl -X POST "http://localhost:8080/v1/structure" \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"document.pdf","pdf_base64":"<base64>","options":{"toc_attempts":2}}'
+```
+
+Response is JSON with `result` (document structure), `effective_options`, and `timings_ms`.
+
+**Docker**
+
+```bash
+docker build -t pageindex .
+docker run -p 8080:8080 -e OPENAI_API_KEY=your_key pageindex
+```
+
 ## Configuration
 
 No config file is required; the CLI and library use built-in defaults. To override, place a `config.yaml` in the repo root (or pass `--config /path/to/config.yaml`). Example `config.yaml`:
