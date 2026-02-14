@@ -24,7 +24,7 @@ func DefaultOptions() Options {
 	return Options{
 		Model:               "gpt-4o-2024-11-20",
 		TOCCheckPageNum:     20,
-		TOCAttempts:        2,
+		TOCAttempts:         2,
 		MaxPageNumEachNode:  10,
 		MaxTokenNumEachNode: 20000,
 		IfAddNodeID:         "yes",

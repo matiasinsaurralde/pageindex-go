@@ -113,38 +113,6 @@ func runFromPages(ctx context.Context, filename string, pages []model.Page, opt 
 	return res, nil
 }
 
-func selectBestTOCCandidate(ctx context.Context, client *llm.Client, pages []model.Page, candidates [][]model.TOCItem, opt config.Options) []model.TOCItem {
-	bestIdx := 0
-	bestAcc := -1.0
-	bestCoverage := -1
-	bestCount := -1
-	for i, c := range candidates {
-		acc, _ := verifyTOC(ctx, client, pages, c, opt.Model, 1)
-		coverage := tocCoverage(c)
-		count := len(c)
-		if acc > bestAcc ||
-			(acc == bestAcc && coverage > bestCoverage) ||
-			(acc == bestAcc && coverage == bestCoverage && count > bestCount) {
-			bestIdx = i
-			bestAcc = acc
-			bestCoverage = coverage
-			bestCount = count
-		}
-	}
-	return candidates[bestIdx]
-}
-
-func tocCoverage(items []model.TOCItem) int {
-	seen := map[int]struct{}{}
-	for _, item := range items {
-		if item.PhysicalIndex == nil {
-			continue
-		}
-		seen[*item.PhysicalIndex] = struct{}{}
-	}
-	return len(seen)
-}
-
 func metaProcessTOC(ctx context.Context, client *llm.Client, pages []model.Page, toc tocCheckResult, opt config.Options, startIndex int) ([]model.TOCItem, error) {
 	mode := "process_no_toc"
 	if strings.TrimSpace(toc.TOCContent) != "" && strings.EqualFold(strings.TrimSpace(toc.PageIndexGivenInTOC), "yes") {
@@ -435,7 +403,7 @@ func tocTransformer(ctx context.Context, client *llm.Client, tocContent string, 
 	// Match Python toc_transformer loop semantics:
 	// continue until both completeness check and finish-reason indicate done.
 	// Keep a guard to avoid unbounded loops on malformed responses.
-	for attempt := 0; !(isComplete && isFinishReasonDone(finishReason)); attempt++ {
+	for attempt := 0; !isComplete || !isFinishReasonDone(finishReason); attempt++ {
 		if attempt >= 8 {
 			break
 		}
@@ -672,6 +640,9 @@ func addPageOffsetToTOC(items []model.TOCItem, offset int) []model.TOCItem {
 func processNonePageNumbers(ctx context.Context, client *llm.Client, tocItems []model.TOCItem, pages []model.Page, startIndex int, modelName string) []model.TOCItem {
 	out := make([]model.TOCItem, len(tocItems))
 	copy(out, tocItems)
+	const maxConcurrent = 8
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
 	for i := range out {
 		if out[i].PhysicalIndex != nil {
 			continue
@@ -696,19 +667,26 @@ func processNonePageNumbers(ctx context.Context, client *llm.Client, tocItems []
 		if next < prev {
 			continue
 		}
-		content := buildTaggedRangeText(pages, prev, next, startIndex)
-		itemCopy := out[i]
-		itemCopy.Page = nil
-		updated, err := addPageNumberToTOC(ctx, client, content, []model.TOCItem{itemCopy}, modelName)
-		if err != nil || len(updated) == 0 {
-			continue
-		}
-		if updated[0].PhysicalIndex != nil {
-			v := *updated[0].PhysicalIndex
-			out[i].PhysicalIndex = &v
-			out[i].Page = nil
-		}
+		wg.Add(1)
+		go func(idx int, prevP, nextP int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			content := buildTaggedRangeText(pages, prevP, nextP, startIndex)
+			itemCopy := out[idx]
+			itemCopy.Page = nil
+			updated, err := addPageNumberToTOC(ctx, client, content, []model.TOCItem{itemCopy}, modelName)
+			if err != nil || len(updated) == 0 {
+				return
+			}
+			if updated[0].PhysicalIndex != nil {
+				v := *updated[0].PhysicalIndex
+				out[idx].PhysicalIndex = &v
+				out[idx].Page = nil
+			}
+		}(i, prev, next)
 	}
+	wg.Wait()
 	return out
 }
 
@@ -824,17 +802,6 @@ func processNoTOCAttempt(ctx context.Context, client *llm.Client, pages []model.
 	}
 
 	return toc, nil
-}
-
-func tocQuality(items []model.TOCItem) (int, int) {
-	seen := make(map[int]struct{}, len(items))
-	for _, item := range items {
-		if item.PhysicalIndex == nil {
-			continue
-		}
-		seen[*item.PhysicalIndex] = struct{}{}
-	}
-	return len(seen), len(items)
 }
 
 func buildTaggedChunks(pages []model.Page, opt config.Options, maxTokens int, startIndex int) []string {
@@ -1315,30 +1282,6 @@ func structureAny(v any) string {
 	}
 }
 
-func parsePhysicalIndexFromTitleFallback(item model.TOCItem) *int {
-	for _, candidate := range []string{item.Title, item.Structure} {
-		m := physicalIndexRE.FindStringSubmatch(candidate)
-		if len(m) == 2 {
-			v, err := strconv.Atoi(m[1])
-			if err == nil {
-				return &v
-			}
-		}
-	}
-	return nil
-}
-
-func fallbackSingleNode(_ []model.Page) []model.TOCItem {
-	one := 1
-	return []model.TOCItem{
-		{
-			Structure:     "1",
-			Title:         "Document",
-			PhysicalIndex: &one,
-		},
-	}
-}
-
 func parentStructure(s string) string {
 	parts := strings.Split(s, ".")
 	if len(parts) <= 1 {
@@ -1414,52 +1357,62 @@ func verifyTOC(ctx context.Context, client *llm.Client, pages []model.Page, item
 func fixIncorrectTOCWithRetries(ctx context.Context, client *llm.Client, pages []model.Page, items []model.TOCItem, incorrect []int, modelName string, startIndex int, maxAttempts int) []model.TOCItem {
 	current := items
 	currentIncorrect := incorrect
+	const maxConcurrentFix = 8
+	sem := make(chan struct{}, maxConcurrentFix)
 	for attempt := 0; attempt < maxAttempts && len(currentIncorrect) > 0; attempt++ {
 		incorrectSet := make(map[int]struct{}, len(currentIncorrect))
 		for _, idx := range currentIncorrect {
 			incorrectSet[idx] = struct{}{}
 		}
+		var wg sync.WaitGroup
 		for _, badIdx := range currentIncorrect {
 			if badIdx < 0 || badIdx >= len(current) {
 				continue
 			}
-			// Match Python fix_incorrect_toc: default prev_correct is start_index - 1.
-			prev := startIndex - 1
-			next := len(pages) + startIndex - 1
-			for i := badIdx - 1; i >= 0; i-- {
-				if _, isIncorrect := incorrectSet[i]; isIncorrect {
-					continue
-				}
-				if current[i].PhysicalIndex != nil {
-					prev = *current[i].PhysicalIndex
-					break
-				}
-			}
-			for i := badIdx + 1; i < len(current); i++ {
-				if _, isIncorrect := incorrectSet[i]; isIncorrect {
-					continue
-				}
-				if current[i].PhysicalIndex != nil {
-					next = *current[i].PhysicalIndex
-					break
-				}
-			}
-			content := buildTaggedRangeText(pages, prev, next, startIndex)
-			fixedIdx, err := singleTOCItemIndexFixer(ctx, client, current[badIdx].Title, content, modelName)
-			if err != nil {
-				continue
-			}
-			if fixedIdx >= startIndex && fixedIdx <= len(pages)+startIndex-1 {
-				localIdx := fixedIdx - startIndex
-				if localIdx >= 0 && localIdx < len(pages) {
-					ok, checkErr := checkTitleAppearance(ctx, client, current[badIdx].Title, pages[localIdx].Text, modelName)
-					if checkErr == nil && ok {
-						v := fixedIdx
-						current[badIdx].PhysicalIndex = &v
+			wg.Add(1)
+			go func(badIdx int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				// Match Python fix_incorrect_toc: default prev_correct is start_index - 1.
+				prev := startIndex - 1
+				next := len(pages) + startIndex - 1
+				for i := badIdx - 1; i >= 0; i-- {
+					if _, isIncorrect := incorrectSet[i]; isIncorrect {
+						continue
+					}
+					if current[i].PhysicalIndex != nil {
+						prev = *current[i].PhysicalIndex
+						break
 					}
 				}
-			}
+				for i := badIdx + 1; i < len(current); i++ {
+					if _, isIncorrect := incorrectSet[i]; isIncorrect {
+						continue
+					}
+					if current[i].PhysicalIndex != nil {
+						next = *current[i].PhysicalIndex
+						break
+					}
+				}
+				content := buildTaggedRangeText(pages, prev, next, startIndex)
+				fixedIdx, err := singleTOCItemIndexFixer(ctx, client, current[badIdx].Title, content, modelName)
+				if err != nil {
+					return
+				}
+				if fixedIdx >= startIndex && fixedIdx <= len(pages)+startIndex-1 {
+					localIdx := fixedIdx - startIndex
+					if localIdx >= 0 && localIdx < len(pages) {
+						ok, checkErr := checkTitleAppearance(ctx, client, current[badIdx].Title, pages[localIdx].Text, modelName)
+						if checkErr == nil && ok {
+							v := fixedIdx
+							current[badIdx].PhysicalIndex = &v
+						}
+					}
+				}
+			}(badIdx)
 		}
+		wg.Wait()
 		_, currentIncorrect = verifyTOC(ctx, client, pages, current, modelName, startIndex)
 	}
 	return current
@@ -1732,18 +1685,6 @@ func marshalTOCForContinue(items []model.TOCItem) string {
 		return marshalPretty(items)
 	}
 	return string(b)
-}
-
-func previewText(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max])
 }
 
 func addNodeText(nodes []*model.Node, pages []model.Page) {

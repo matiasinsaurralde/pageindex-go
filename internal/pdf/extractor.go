@@ -42,7 +42,7 @@ func extractPagesWithFitz(data []byte, modelName string) ([]model.Page, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create temp pdf: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if _, err := tmpFile.Write(data); err != nil {
 		_ = tmpFile.Close()
@@ -56,7 +56,7 @@ func extractPagesWithFitz(data []byte, modelName string) ([]model.Page, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open pdf: %w", err)
 	}
-	defer doc.Close()
+	defer func() { _ = doc.Close() }()
 
 	pageCount := doc.NumPage()
 	pages := make([]model.Page, 0, pageCount)
