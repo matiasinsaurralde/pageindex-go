@@ -17,5 +17,6 @@ require (
 	github.com/ebitengine/purego v0.8.4 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/jupiterrider/ffi v0.5.0 // indirect
+	github.com/philippgille/chromem-go v0.7.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 )
