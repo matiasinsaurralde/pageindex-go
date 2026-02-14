@@ -1,0 +1,8 @@
+.env
+.git
+*.md
+testdata
+logs
+results
+*.pdf
+.parity_work
