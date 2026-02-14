@@ -24,10 +24,17 @@ func NewFromEnv() (*Client, error) {
 	if key == "" {
 		return nil, errors.New("missing CHATGPT_API_KEY or OPENAI_API_KEY")
 	}
-	return &Client{api: openai.NewClient(key)}, nil
+	return &Client{
+		api: openai.NewClient(key),
+	}, nil
 }
 
 func (c *Client) Chat(ctx context.Context, model string, prompt string, history []openai.ChatCompletionMessage) (string, error) {
+	content, _, err := c.ChatWithFinishReason(ctx, model, prompt, history)
+	return content, err
+}
+
+func (c *Client) ChatWithFinishReason(ctx context.Context, model string, prompt string, history []openai.ChatCompletionMessage) (string, string, error) {
 	messages := make([]openai.ChatCompletionMessage, 0, len(history)+1)
 	messages = append(messages, history...)
 	messages = append(messages, openai.ChatCompletionMessage{
@@ -43,7 +50,9 @@ func (c *Client) Chat(ctx context.Context, model string, prompt string, history 
 			Temperature: float32(0),
 		})
 		if err == nil && len(resp.Choices) > 0 {
-			return resp.Choices[0].Message.Content, nil
+			content := resp.Choices[0].Message.Content
+			finishReason := string(resp.Choices[0].FinishReason)
+			return content, finishReason, nil
 		}
 		if err == nil {
 			err = errors.New("openai returned no choices")
@@ -52,10 +61,14 @@ func (c *Client) Chat(ctx context.Context, model string, prompt string, history 
 		backoff := time.Duration(attempt+1) * 300 * time.Millisecond
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		case <-time.After(backoff):
 		}
 	}
 
-	return "", fmt.Errorf("openai chat failed after retries: %w", lastErr)
+	return "", "", fmt.Errorf("openai chat failed after retries: %w", lastErr)
+}
+
+func (c *Client) Close() error {
+	return nil
 }

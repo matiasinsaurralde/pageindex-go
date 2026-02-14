@@ -1,20 +1,24 @@
 package pdf
 
 import (
-	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
-	pdf "github.com/ledongthuc/pdf"
+	"github.com/gen2brain/go-fitz"
 
+	"github.com/matiasinsaurralde/go-pageindex/internal/config"
 	"github.com/matiasinsaurralde/go-pageindex/internal/model"
 	"github.com/matiasinsaurralde/go-pageindex/internal/tokens"
 )
 
 func ExtractPagesWithTokensFromBytes(data []byte, modelName string) ([]model.Page, error) {
-	r := bytes.NewReader(data)
-	return ExtractPagesWithTokensFromReaderAt(r, int64(len(data)), modelName)
+	return extractPagesWithFitz(data, modelName)
+}
+
+func ExtractPagesWithTokensFromBytesWithOptions(data []byte, opt config.Options) ([]model.Page, error) {
+	return extractPagesWithFitz(data, opt.Model)
 }
 
 func ExtractPagesWithTokensFromReader(reader io.Reader, modelName string) ([]model.Page, error) {
@@ -22,27 +26,44 @@ func ExtractPagesWithTokensFromReader(reader io.Reader, modelName string) ([]mod
 	if err != nil {
 		return nil, fmt.Errorf("read pdf bytes: %w", err)
 	}
-	return ExtractPagesWithTokensFromBytes(b, modelName)
+	return extractPagesWithFitz(b, modelName)
 }
 
-func ExtractPagesWithTokensFromReaderAt(reader io.ReaderAt, size int64, modelName string) ([]model.Page, error) {
-	doc, err := pdf.NewReader(reader, size)
+func ExtractPagesWithTokensFromReaderWithOptions(reader io.Reader, opt config.Options) ([]model.Page, error) {
+	b, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, fmt.Errorf("open pdf reader: %w", err)
+		return nil, fmt.Errorf("read pdf bytes: %w", err)
 	}
+	return extractPagesWithFitz(b, opt.Model)
+}
+
+func extractPagesWithFitz(data []byte, modelName string) ([]model.Page, error) {
+	tmpFile, err := os.CreateTemp("", "pageindex-fitz-*.pdf")
+	if err != nil {
+		return nil, fmt.Errorf("create temp pdf: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return nil, fmt.Errorf("write temp pdf: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return nil, fmt.Errorf("close temp pdf: %w", err)
+	}
+
+	doc, err := fitz.New(tmpFile.Name())
+	if err != nil {
+		return nil, fmt.Errorf("open pdf: %w", err)
+	}
+	defer doc.Close()
 
 	pageCount := doc.NumPage()
 	pages := make([]model.Page, 0, pageCount)
-	for pageIndex := 1; pageIndex <= pageCount; pageIndex++ {
-		p := doc.Page(pageIndex)
-		if p.V.IsNull() {
-			pages = append(pages, model.Page{})
-			continue
-		}
-
-		text, err := p.GetPlainText(nil)
+	for pageIndex := 0; pageIndex < pageCount; pageIndex++ {
+		text, err := doc.Text(pageIndex)
 		if err != nil {
-			return nil, fmt.Errorf("extract text from page %d: %w", pageIndex, err)
+			return nil, fmt.Errorf("extract text from page %d: %w", pageIndex+1, err)
 		}
 		text = strings.TrimSpace(text)
 		pages = append(pages, model.Page{
