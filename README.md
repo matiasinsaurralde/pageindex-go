@@ -53,19 +53,18 @@ go run ./cmd/pageindex --pdf-path /path/to/document.pdf
 ```bash
 go run ./cmd/pageindex \
   --pdf-path /path/to/document.pdf \
-  --config pageindex/config.yaml \
   --output ./out/result.json
 ```
 
 Optional flags:
 
 - `--model` override model from config
-- `--config` path to YAML config (default: `pageindex/config.yaml`)
+- `--config` path to YAML config (optional; omit to use built-in defaults)
 - `--output` output JSON path (prints to stdout if omitted)
 
 ## Configuration
 
-Default settings live in `pageindex/config.yaml`.
+No config file is required; the CLI and library use built-in defaults. To override, place a `config.yaml` in the repo root (or pass `--config /path/to/config.yaml`). Example `config.yaml`:
 
 ```yaml
 model: "gpt-4o-2024-11-20"
@@ -93,7 +92,8 @@ import (
 )
 
 func main() {
-    opts, err := pageindex.LoadOptions("pageindex/config.yaml")
+    // Use "" for built-in defaults, or pass a path to your config YAML
+    opts, err := pageindex.LoadOptions("")
     if err != nil {
         panic(err)
     }

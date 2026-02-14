@@ -16,7 +16,7 @@ import (
 
 func main() {
 	pdfPath := flag.String("pdf-path", "", "Path to PDF file")
-	configPath := flag.String("config", "pageindex/config.yaml", "Path to config yaml")
+	configPath := flag.String("config", "", "Path to config YAML (optional; omit to use defaults)")
 	modelOverride := flag.String("model", "", "Optional model override")
 	outputPath := flag.String("output", "", "Optional output JSON file path")
 	flag.Parse()
