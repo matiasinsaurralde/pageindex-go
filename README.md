@@ -24,9 +24,7 @@ Go rewrite of PageIndex for generating a hierarchical, reasoning-friendly tree i
 ## Requirements
 
 - Go `1.24.x` (see `go.mod`)
-- OpenAI-compatible API key via:
-  - `CHATGPT_API_KEY`, or
-  - `OPENAI_API_KEY`
+- OpenAI-compatible API key via `OPENAI_API_KEY`
 
 ## Installation
 
@@ -39,7 +37,7 @@ go mod download
 1. Create a `.env` file in the repository root:
 
 ```bash
-CHATGPT_API_KEY=your_api_key_here
+OPENAI_API_KEY=your_api_key_here
 ```
 
 2. Run PageIndex on a PDF:

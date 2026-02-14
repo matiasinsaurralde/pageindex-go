@@ -17,12 +17,9 @@ type Client struct {
 
 func NewFromEnv() (*Client, error) {
 	_ = godotenv.Load()
-	key := os.Getenv("CHATGPT_API_KEY")
+	key := os.Getenv("OPENAI_API_KEY")
 	if key == "" {
-		key = os.Getenv("OPENAI_API_KEY")
-	}
-	if key == "" {
-		return nil, errors.New("missing CHATGPT_API_KEY or OPENAI_API_KEY")
+		return nil, errors.New("missing OPENAI_API_KEY")
 	}
 	return &Client{
 		api: openai.NewClient(key),
