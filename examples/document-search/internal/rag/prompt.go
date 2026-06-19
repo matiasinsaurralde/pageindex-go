@@ -45,7 +45,7 @@ func BuildPrompt(question string, chunks []ContextChunk) string {
 	b.WriteString(question)
 	b.WriteString("\n\nContext snippets (ranked):\n")
 	for i, ch := range chunks {
-		b.WriteString(fmt.Sprintf("[%d] [%s:%s] doc=%s node=%s\n", i+1, ch.DocID, ch.ChunkID, ch.DocName, ch.NodeID))
+		fmt.Fprintf(&b, "[%d] [%s:%s] doc=%s node=%s\n", i+1, ch.DocID, ch.ChunkID, ch.DocName, ch.NodeID)
 		b.WriteString(ch.Text)
 		b.WriteString("\n\n")
 	}

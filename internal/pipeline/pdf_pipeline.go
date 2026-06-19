@@ -196,7 +196,7 @@ func processTOCWithPageNumbers(ctx context.Context, client *llm.Client, pages []
 	var mainContent strings.Builder
 	for pageIndex := startPageIndex; pageIndex < limit; pageIndex++ {
 		pageNo := pageIndex + startIndex
-		mainContent.WriteString(fmt.Sprintf("<physical_index_%d>\n%s\n<physical_index_%d>\n\n", pageNo, pages[pageIndex].Text, pageNo))
+		fmt.Fprintf(&mainContent, "<physical_index_%d>\n%s\n<physical_index_%d>\n\n", pageNo, pages[pageIndex].Text, pageNo)
 	}
 
 	tocWithPhysicalIndex, err := tocIndexExtractor(ctx, client, tocNoPageNumber, mainContent.String(), opt.Model)
@@ -1549,7 +1549,7 @@ func buildTaggedRangeText(pages []model.Page, startPage int, endPage int, startI
 		if local < 0 || local >= len(pages) {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("<physical_index_%d>\n%s\n<physical_index_%d>\n\n", pageNo, pages[local].Text, pageNo))
+		fmt.Fprintf(&b, "<physical_index_%d>\n%s\n<physical_index_%d>\n\n", pageNo, pages[local].Text, pageNo)
 	}
 	return b.String()
 }
